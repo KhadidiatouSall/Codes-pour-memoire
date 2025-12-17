@@ -1,38 +1,5 @@
----
-title: "sript_memoire_KS"
-output: html_document
-date: "2025-12-16"
----
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
-
-# =============================================================================
-# VOLATILITY & EXTREME RISK — BRVM COMPOSITE
-# Full econometric framework: GARCH / EGARCH / EVT (POT)
-# Author: Khadididiatou Sall
-# =============================================================================
 ```{r}
 
 # 1. Packages
@@ -49,9 +16,8 @@ for(p in required){
   library(p, character.only=TRUE)
 }
 ```
-```{r}
 # 2. Chargement & préparation des données
-
+```{r}
 cat("\nSTEP 2 — Data loading\n")
 
 data_brvm <- read.csv("C:/Users/USER/OneDrive/donnees_brvm/docfinl/BRVM Composite - Données Historiques.csv", stringsAsFactors = FALSE)
@@ -67,9 +33,7 @@ colnames(returns) <- "r"
 cat("Observations:", length(returns), "\n")
 ```
 
-
-
-# 3. Covariable : écart absolu retardé
+# 3. Calcul de la Covariable : écart absolu retardé
 ```{r}
 cat("\nSTEP 3 — External regressor\n")
 
@@ -127,7 +91,7 @@ specs <- list(
 )
 ```
 
-# 6. Estimation & sélection
+# 6. Estimation des modeles GARCH:
 ```{r}
 # Estimation des modèles
 fits <- list()
@@ -165,7 +129,7 @@ results <- merge(info, evals, by = "Modèle")
 results <- results[order(results$AIC), ]
 print(results)
 ```
-# Diagnostic du meilleur modele:
+# 8.Diagnostic du meilleur modele:
 ```{r}
 # Résidus standardisés
 resid_std <- residuals(best_fit, standardize = TRUE)
@@ -209,7 +173,7 @@ plot(best_fit, which = 9)
 ```
 
 
-🔹 8. VaR & ES (Student-t)
+# 9. Estimation VaR & ES des modeles GARCH
 ```{r}
 cat("\n CALCUL DE LA VAR ET ES STANDARD\n")
 calculer_var_es_egarch <- function(fit_egarch, alpha = 0.05) {
@@ -245,7 +209,7 @@ cat("Skewness :", round(skewness(residus_evt), 4), "\n")
 cat("Kurtosis :", round(kurtosis(residus_evt), 4), "\n")
 
 ```
-# Analyse POT
+# 10.Analyse POT
 ```{r}
 # Analyse POT
 fit_pot <- fitgpd(residus_evt, threshold = quantile(residus_evt, 0.95), est = "mle")
@@ -286,9 +250,9 @@ calcul_es_egarch_pot <- function(alpha, fit_pot) {
   }
 }
 ```
-
+# 11. # Mean Excess Plot
 ```{r}
-# Mean Excess Plot avec bandes de confiance
+
 library(POT)
 
 # Calcul des mesures de risque EGARCH-POT
@@ -325,7 +289,7 @@ tableau_synthese <- data.frame(
 
 print(tableau_synthese)
 ```
-# Validation croisee
+# 12. Validation croisee
 ```{r}
 
 validation_croisee_simple <- function(rendements, k = 5) {
@@ -368,7 +332,7 @@ print(scores_validation)
 cat("Taux de violation moyen :", round(mean(scores_validation$Violation_Rate), 4), "\n")
 
 ```
-# Analyse de la crise covid 19
+# 13. Analyse de la crise covid 19
 ```{r}
 date_covid <- as.Date("2020-03-02")
 # --- 2. construire série temporelle des rendements log -------------------
@@ -406,7 +370,7 @@ if(!is.null(var_avant) && !is.null(var_apres)) {
   print(p2)
 }
 
-# --- 10. Export des résultats / tableau final ----------------------------
+# --- . Export des résultats / tableau final ----------------------------
 write.csv(stats_df, "summary_garch_subperiods.csv", row.names = FALSE)
 cat("Résultats statistiques sauvegardés: summary_garch_subperiods.csv\n")
 
@@ -540,19 +504,5 @@ p <- ggplot(df_plot, aes(x = Date, y = Rendement)) +
 print(p)
 index_dates <- index(ret2)
 index_dates[bp$breakpoints]
-```
-```{r}
-### ICSSS
-
-install.packages("changepoint")
-library(changepoint)
-ret <- as.numeric(rendements)
-
-icss_res <- cpt.var(ret, method = "BinSeg", penalty = "MBIC")
-
-print(icss_res)
-
-plot(icss_res, main = "Changements de variance détectés")
-
 ```
 
