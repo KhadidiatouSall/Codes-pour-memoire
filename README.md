@@ -4,7 +4,7 @@ Ces fichiers contiennent l'ensemble des codes utilisés ainsi que les données a
 
 Ce dépôt contient les codes R développés dans le cadre de mon mémoire de Master,
 consacré à la modélisation de la volatilité des rendements financiers à l’aide
-des modèles GARCH avec variables exogènes (GARCH-X) et de l’approche GARCH-EVT.
+des modèles GARCH avec variables exogènes et de l’approche GARCH-TVE.
 
 L’étude intègre l’écart absolu des rendements comme variable explicative de la
 variance conditionnelle afin d’améliorer la modélisation de la volatilité.
