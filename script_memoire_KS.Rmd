@@ -1,0 +1,558 @@
+---
+title: "sript_memoire_KS"
+output: html_document
+date: "2025-12-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+# =============================================================================
+# VOLATILITY & EXTREME RISK — BRVM COMPOSITE
+# Full econometric framework: GARCH / EGARCH / EVT (POT)
+# Author: Khadididiatou Sall
+# =============================================================================
+```{r}
+
+# 1. Packages
+
+cat("STEP 1 — Packages\n")
+
+required <- c(
+  "rugarch","xts","PerformanceAnalytics","Metrics","FinTS",
+  "tseries","POT","ggplot2","dplyr","moments"
+)
+
+for(p in required){
+  if(!requireNamespace(p, quietly=TRUE)) install.packages(p)
+  library(p, character.only=TRUE)
+}
+```
+```{r}
+# 2. Chargement & préparation des données
+
+cat("\nSTEP 2 — Data loading\n")
+
+data_brvm <- read.csv("C:/Users/USER/OneDrive/donnees_brvm/docfinl/BRVM Composite - Données Historiques.csv", stringsAsFactors = FALSE)
+
+data_brvm$Date <- as.Date(data_brvm$Date, "%d/%m/%Y")
+data_brvm$Dernier <- as.numeric(gsub(",", ".", data_brvm$Dernier))
+data_brvm <- data_brvm[order(data_brvm$Date), ]
+
+prices <- xts(data_brvm$Dernier, order.by = data_brvm$Date)
+returns <- na.omit(Return.calculate(prices, method="log"))
+colnames(returns) <- "r"
+
+cat("Observations:", length(returns), "\n")
+```
+
+
+
+# 3. Covariable : écart absolu retardé
+```{r}
+cat("\nSTEP 3 — External regressor\n")
+
+abs_r <- abs(returns)
+abs_r_lag1 <- lag(abs_r, 1)
+
+data_model <- na.omit(merge(returns, abs_r_lag1))
+colnames(data_model) <- c("r","abs_lag1")
+
+r_clean <- data_model$r
+X <- as.matrix(coredata(data_model$abs_lag1))
+```
+# 4. Scinder l'echantillon en train / test
+
+```{r}
+ 
+cat("\nSTEP 4 — Train / test split\n")
+
+n <- length(r_clean)
+n_train <- floor(0.8*n)
+
+r_train <- r_clean[1:n_train]
+r_test  <- r_clean[(n_train+1):n]
+```
+
+# 5. Spécification des modèles GARCH
+```{r}
+cat("\nSTEP 5 — GARCH specifications\n")
+specs <- list(
+  sGARCH = ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+    distribution.model = "std"
+  ),
+  GARCHX = ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1,1), external.regressors = external_var),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+    distribution.model = "std"
+  ),
+  EGARCH = ugarchspec(
+    variance.model = list(model = "eGARCH", garchOrder = c(1,1), external.regressors = external_var),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+    distribution.model = "std"
+  ),
+  GJR = ugarchspec(
+    variance.model = list(model = "gjrGARCH", garchOrder = c(1,1), external.regressors = external_var),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+    distribution.model = "std"
+  ),
+  GARCHM = ugarchspec(
+    variance.model = list(model = "sGARCH", garchOrder = c(1,1), external.regressors = external_var),
+    mean.model = list(armaOrder = c(0,0), include.mean = TRUE, archm = TRUE, archpow = 1),
+    distribution.model = "std"
+  )
+)
+```
+
+# 6. Estimation & sélection
+```{r}
+# Estimation des modèles
+fits <- list()
+for(nom in names(specs)) {
+  cat("Estimation", nom, "...\n")
+  fits[[nom]] <- ugarchfit(specs[[nom]], data = train, solver = "hybrid")
+}
+```
+
+# 7. Selection du meilleur modele
+```{r}
+
+# Critères de sélection
+get_info <- function(fit) {
+  if (is.null(fit) || fit@fit$convergence != 0) return(c(AIC = NA, BIC = NA, logLik = NA))
+  ic <- tryCatch(infocriteria(fit), error = function(e) rep(NA, 4))
+  logL <- tryCatch(likelihood(fit), error = function(e) NA)
+  return(c(AIC = ic[1], BIC = ic[2], logLik = logL))
+}
+
+info <- data.frame(Modèle = names(fits), t(sapply(fits, get_info)))
+
+# Évaluation des prévisions
+eval_forecast <- function(fit, test_data) {
+  forecast <- ugarchforecast(fit, n.ahead = length(test_data))
+  pred <- fitted(forecast)
+  real <- as.numeric(test_data)
+  return(c(MAE = mae(real, pred), RMSE = rmse(real, pred)))
+}
+
+evals <- data.frame(Modèle = names(fits), t(sapply(fits, eval_forecast, test)))
+
+# Résultats finaux
+results <- merge(info, evals, by = "Modèle")
+results <- results[order(results$AIC), ]
+print(results)
+```
+# Diagnostic du meilleur modele:
+```{r}
+# Résidus standardisés
+resid_std <- residuals(best_fit, standardize = TRUE)
+
+cat("Tests de diagnostic :\n")
+cat("Ljung-Box résidus :", Box.test(resid_std, lag = 10)$p.value, "\n")
+cat("Ljung-Box résidus² :", Box.test(resid_std^2, lag = 10)$p.value, "\n")
+cat("Test ARCH :", ArchTest(resid_std)$p.value, "\n")
+
+
+
+cat("Tests de diagnostic :\n\n")
+
+# Test Ljung-Box sur résidus
+lb_res <- Box.test(resid_std, lag = 10)
+cat("Ljung-Box résidus :\n")
+cat("  Statistique :", round(lb_res$statistic, 4), "\n")
+cat("  p-value     :", round(lb_res$p.value, 6), "\n\n")
+
+# Test Ljung-Box sur résidus au carré
+lb_res2 <- Box.test(resid_std^2, lag = 10)
+cat("Ljung-Box résidus² :\n")
+cat("  Statistique :", round(lb_res2$statistic, 4), "\n")
+cat("  p-value     :", round(lb_res2$p.value, 6), "\n\n")
+
+# Test ARCH
+arch_res <- ArchTest(resid_std)
+cat("Test ARCH :\n")
+cat("  Statistique :", round(arch_res$statistic, 4), "\n")
+cat("  p-value     :", round(arch_res$p.value, 6), "\n")
+
+```
+```{r}
+
+# Graphiques diagnostiques
+par(mfrow = c(2,2))
+plot(best_fit, which = 1)
+plot(best_fit, which = 3)
+plot(best_fit, which = 8)
+plot(best_fit, which = 9)
+```
+
+
+🔹 8. VaR & ES (Student-t)
+```{r}
+cat("\n CALCUL DE LA VAR ET ES STANDARD\n")
+calculer_var_es_egarch <- function(fit_egarch, alpha = 0.05) {
+  sigma_t <- sigma(fit_egarch)
+  mu <- fitted(fit_egarch)
+  shape <- fit_egarch@fit$coef["shape"]
+  
+  var_conditionnelle <- mu + sigma_t * qdist("std", p = alpha, mu = 0, sigma = 1, shape = shape)
+  es_conditionnel <- mu + sigma_t * (dt(qdist("std", p = alpha, mu = 0, sigma = 1, shape = shape), df = shape) / alpha) *
+    (shape + (qdist("std", p = alpha, mu = 0, sigma = 1, shape = shape))^2) / (shape - 1)
+  
+  return(list(VaR = var_conditionnelle, ES = es_conditionnel, shape = shape))
+}
+
+resultats_risque <- calculer_var_es_egarch(best_fit, 0.05)
+cat("VaR moyenne (95%) :", round(mean(resultats_risque$VaR), 6), "\n")
+cat("ES moyenne (95%) :", round(mean(resultats_risque$ES), 6), "\n")
+cat("Paramètre shape :", round(resultats_risque$shape, 4), "\n")
+```
+
+
+# 9. Approche POT sur résidus standardises:
+```{r}
+
+# Extraction résidus
+residus_std <- residuals(best_fit, standardize = TRUE)
+residus_evt <- coredata(residus_std)
+
+cat("Statistiques des résidus :\n")
+cat("Moyenne :", round(mean(residus_evt), 4), "\n")
+cat("Écart-type :", round(sd(residus_evt), 4), "\n")
+cat("Skewness :", round(skewness(residus_evt), 4), "\n")
+cat("Kurtosis :", round(kurtosis(residus_evt), 4), "\n")
+
+```
+# Analyse POT
+```{r}
+# Analyse POT
+fit_pot <- fitgpd(residus_evt, threshold = quantile(residus_evt, 0.95), est = "mle")
+
+cat("\nParamètres GPD :\n")
+cat("Seuil :", round(fit_pot$threshold, 4), "\n")
+cat("Échelle (σ) :", round(fit_pot$param["scale"], 4), "\n")
+cat("Forme (ξ) :", round(fit_pot$param["shape"], 4), "\n")
+cat("Nombre d'excès :", length(fit_pot$exceed), "\n")
+
+```
+```{r}
+
+# Fonctions pour EGARCH-POT
+calcul_quantile_egarch_pot <- function(alpha, fit_pot) {
+  u <- fit_pot$threshold; sigma <- fit_pot$param["scale"]
+  xi <- fit_pot$param["shape"]; zeta_u <- fit_pot$pat
+  
+  if(abs(xi) < 1e-8) {
+    return(u + sigma * log(1/(alpha * zeta_u)))
+  } else {
+    return(u + (sigma/xi) * ((1/(alpha * zeta_u))^xi - 1))
+  }
+}
+
+calcul_es_egarch_pot <- function(alpha, fit_pot) {
+  u <- fit_pot$threshold; sigma <- fit_pot$param["scale"]
+  xi <- fit_pot$param["shape"]
+  
+  VaR_alpha <- calcul_quantile_egarch_pot(alpha, fit_pot)
+  
+  if(abs(xi) < 1e-8) {
+    return(VaR_alpha + sigma)
+  } else if(xi < 1) {
+    return((VaR_alpha + sigma - xi * u) / (1 - xi))
+  } else {
+    return(NA)
+  }
+}
+```
+
+```{r}
+# Mean Excess Plot avec bandes de confiance
+library(POT)
+
+# Calcul des mesures de risque EGARCH-POT
+forecast_egarch <- ugarchforecast(best_fit, n.ahead = 1)
+mu_prev <- as.numeric(fitted(forecast_egarch))
+sigma_prev <- as.numeric(sigma(forecast_egarch))
+
+niveaux_confiance <- c(0.05, 0.025, 0.01, 0.005)
+resultats_egarch_pot <- list()
+
+for(alpha in niveaux_confiance) {
+  quantile_alpha <- calcul_quantile_egarch_pot(alpha, fit_pot)
+  VaR_egarch_pot <- mu_prev + sigma_prev * quantile_alpha
+  ES_egarch_pot <- mu_prev + sigma_prev * calcul_es_egarch_pot(alpha, fit_pot)
+  
+  VaR_normale <- mu_prev + sigma_prev * qnorm(alpha)
+  ES_normale <- mu_prev + sigma_prev * (dnorm(qnorm(alpha)) / alpha)
+  
+  resultats_egarch_pot[[as.character(alpha)]] <- list(
+    VaR_egarch_pot = VaR_egarch_pot,
+    ES_egarch_pot = ES_egarch_pot,
+    VaR_normale = VaR_normale,
+    ES_normale = ES_normale
+  )
+}
+# Tableau synthèse
+tableau_synthese <- data.frame(
+  Niveau_Confiance = (1 - niveaux_confiance) * 100,
+  VaR_EGARCH_POT = sapply(resultats_egarch_pot, function(x) round(x$VaR_egarch_pot, 6)),
+  ES_EGARCH_POT = sapply(resultats_egarch_pot, function(x) round(x$ES_egarch_pot, 6)),
+  VaR_Normale = sapply(resultats_egarch_pot, function(x) round(x$VaR_normale, 6)),
+  ES_Normale = sapply(resultats_egarch_pot, function(x) round(x$ES_normale, 6))
+)
+
+print(tableau_synthese)
+```
+# Validation croisee
+```{r}
+
+validation_croisee_simple <- function(rendements, k = 5) {
+  n_obs <- length(rendements)
+  taille_pli <- floor(n_obs / k)
+  scores <- data.frame()
+  
+  for(pli in 1:k) {
+    indices_test <- ((pli-1)*taille_pli + 1):min(pli*taille_pli, n_obs)
+    indices_train <- setdiff(1:n_obs, indices_test)
+    
+    # Estimation EGARCH
+    spec_egarch <- ugarchspec(
+      variance.model = list(model = "eGARCH", garchOrder = c(1,1)),
+      mean.model = list(armaOrder = c(0,0), include.mean = TRUE),
+      distribution.model = "std"
+    )
+    
+    fit_egarch <- ugarchfit(spec_egarch, data = rendements[indices_train])
+    
+    # Backtesting sur le pli de test
+    backtest <- backtesting_simple(fit_egarch, 0.05)
+    
+    scores <- rbind(scores, data.frame(
+      Pli = pli,
+      Taille_Train = length(indices_train),
+      Taille_Test = length(indices_test),
+      Violation_Rate = backtest$violation_rate,
+      Kupiec_pvalue = backtest$kupiec_pvalue
+    ))
+  }
+  
+  return(scores)
+}
+
+# Application validation croisée
+scores_validation <- validation_croisee_simple(rendements_clean)
+cat("Résultats validation croisée :\n")
+print(scores_validation)
+cat("Taux de violation moyen :", round(mean(scores_validation$Violation_Rate), 4), "\n")
+
+```
+# Analyse de la crise covid 19
+```{r}
+date_covid <- as.Date("2020-03-02")
+# --- 2. construire série temporelle des rendements log -------------------
+prix_xts <- xts(df$Dernier, order.by = df$Date)
+rendements <- na.omit(Return.calculate(prix_xts, method = "log"))
+colnames(rendements) <- "Rendement"
+
+cat("Observations totales:", NROW(rendements), "\n")
+
+# --- 3. découpage avant / après COVID -----------------------------------
+avant_covid <- rendements[index(rendements) < date_covid]
+apres_covid <- rendements[index(rendements) >= date_covid]
+cat("Observations avant COVID :", NROW(avant_covid), "\n")
+cat("Observations après COVID  :", NROW(apres_covid), "\n")
+
+```
+```{r}
+
+# VaR plot (superposer rendements et VaR)
+df_var_plot <- NULL
+if(!is.null(var_avant) && !is.null(var_apres)) {
+  df_var_plot <- data.frame(
+    Date = c(index(var_avant), index(var_apres)),
+    VaR = c(as.numeric(var_avant), as.numeric(var_apres)),
+    Rendement = c(as.numeric(avant_covid)[1:length(as.numeric(var_avant))],
+                  as.numeric(apres_covid)[1:length(as.numeric(var_apres))]),
+    Period = c(rep("Avant COVID", length(var_avant)), rep("Après COVID", length(var_apres)))
+  )
+  p2 <- ggplot(df_var_plot, aes(x = Date)) +
+    geom_line(aes(y = Rendement), color = "gray40", size = 0.4) +
+    geom_line(aes(y = VaR, color = Period), size = 0.7) +
+    scale_color_manual(values = c("#1f77b4", "#d62728")) +
+    labs(title = "VaR(95%) et Rendements - Avant/Après COVID", y = "Rendement / VaR", x = "") +
+    geom_vline(xintercept = date_covid, linetype = "dashed")
+  print(p2)
+}
+
+# --- 10. Export des résultats / tableau final ----------------------------
+write.csv(stats_df, "summary_garch_subperiods.csv", row.names = FALSE)
+cat("Résultats statistiques sauvegardés: summary_garch_subperiods.csv\n")
+
+```
+#Test de stabilité (Sup-LM / SupF) sur une régression simple
+```{r}
+
+
+lm0 <- lm(coredata(rendements) ~ 1)
+sct_supF <- tryCatch(strucchange::sctest(lm0, type = "supF"), error = function(e) NULL)
+sct_supLM <- tryCatch(strucchange::sctest(lm0, type = "SupLM"), error = function(e) NULL)
+
+cat("\nTests de stabilité (régression simple rendements ~ 1) :\n")
+if(!is.null(sct_supF)) {
+  cat("SupF p-value :", sct_supF$p.value, "\n")
+} else cat("SupF non disponible.\n")
+if(!is.null(sct_supLM)) {
+  cat("SupLM p-value :", sct_supLM$p.value, "\n")
+} else cat("SupLM non disponible.\n")
+
+# ---- 4) Test de Chow à une date connue (ex: date_covid) -------------------
+chow_test_at_date <- function(y_xts, date_cut) {
+  if(!("xts" %in% class(y_xts))) stop("y_xts doit être un xts.")
+  if(!(date_cut %in% index(y_xts))) {
+    # si date_cut pas dans index, choisir la plus proche
+    date_cut <- index(y_xts)[which.max(index(y_xts) <= date_cut)]
+    message("Date_cut ajustée à ", as.character(date_cut))
+  }
+  y <- coredata(y_xts)
+  dates_local <- index(y_xts)
+  cut_idx <- which(dates_local == date_cut)
+  if(length(cut_idx)==0 || cut_idx <= 5 || cut_idx >= length(y)-5) {
+    return(list(error = "Point de coupure invalide (trop proche des bords)."))
+  }
+  # modèles
+  y1 <- y[1:cut_idx]
+  y2 <- y[(cut_idx+1):length(y)]
+  fit1 <- lm(y1 ~ 1)
+  fit2 <- lm(y2 ~ 1)
+  fit_all <- lm(y ~ 1)
+  # construire statistique Chow (équivalente F)
+  sse_all <- sum(resid(fit_all)^2)
+  sse1 <- sum(resid(fit1)^2)
+  sse2 <- sum(resid(fit2)^2)
+  k <- 1  # nombre de paramètres dans chaque régression (intercept seulement)
+  n1 <- length(y1); n2 <- length(y2); n <- length(y)
+  num <- (sse_all - (sse1 + sse2)) / k
+  den <- (sse1 + sse2) / (n1 + n2 - 2*k)
+  Fstat <- num / den
+  pval <- 1 - pf(Fstat, df1 = k, df2 = (n1 + n2 - 2*k))
+  return(list(F = Fstat, p.value = pval, cut_idx = cut_idx, date_cut = date_cut))
+}
+
+# utiliser date_covid si défini
+if(exists("date_covid")) {
+  chow_res <- chow_test_at_date(rendements, date_covid)
+  cat("\nChow test à la date", date_covid, ":\n")
+  print(chow_res)
+} else {
+  cat("date_covid non défini : ne peut pas exécuter Chow.\n")
+}
+
+# ---- 5) Interprétation automatique (guide) -------------------------------
+interpretation <- function(bp_idx, supF_p, supLM_p, chow_p) {
+  cat("\n==== Interprétation synthétique ====\n")
+  if(!is.null(bp_idx) && length(bp_idx)>0 && !all(is.na(bp_idx))) {
+    cat("- Ruptures de variance détectées aux index:", bp_idx, "\n")
+  } else cat("- Aucun breakpoint clair détecté par breakpoints().\n")
+  if(!is.null(supF_p)) {
+    if(supF_p < 0.05) cat("- SupF: p <", supF_p, "- indication d'instabilité structurelle .\n") else cat("- SupF: pas de preuve forte d'instabilité (p =", round(supF_p,4), ").\n")
+  }
+  if(!is.null(supLM_p)) {
+    if(supLM_p < 0.05) cat("- SupLM: p <", supLM_p, "- rupture potentielle.\n") else cat("- SupLM: pas significatif (p =", round(supLM_p,4), ").\n")
+  }
+  if(!is.null(chow_p)) {
+    if(chow_p < 0.05) cat("rejet d'égalité des paramètres -> rupture.\n") else cat("- Chow: pas de rejet à la date choisie (p =", round(chow_p,4), ").\n")
+  }
+}
+
+bp_idx_local <- if(!is.null(bp) && length(bp$breakpoints)>0) bp$breakpoints else NA
+supF_p <- if(!is.null(sct_supF)) sct_supF$p.value else NA
+supLM_p <- if(!is.null(sct_supLM)) sct_supLM$p.value else NA
+chow_p <- if(exists("chow_res") && is.list(chow_res) && !is.null(chow_res$p.value)) chow_res$p.value else NA
+
+interpretation(bp_idx_local, supF_p, supLM_p, chow_p)
+
+# ---- 6) sauvegarde des résultats ---------------------------------------
+res_summary <- list(
+  ICSS_available = icss_available,
+  ICSS = if(exists("icss_res")) icss_res else NULL,
+  breakpoints = if(!is.null(bp)) bp else NULL,
+  supF = sct_supF,
+  supLM = sct_supLM,
+  chow = if(exists("chow_res")) chow_res else NULL
+)
+saveRDS(res_summary, file = "rupture_tests_summary.rds")
+
+
+
+
+```
+# 
+```{r}
+# Régressions locales
+mean_before  <- mean(y[dates < date_covid])
+mean_after   <- mean(y[dates >= date_covid])
+
+df_plot <- data.frame(
+  Date = dates,
+  Rendement = y,
+  Regime = ifelse(dates < date_covid, "Avant COVID", "Après COVID"),
+  Fit = ifelse(dates < date_covid, mean_before, mean_after)
+)
+
+p <- ggplot(df_plot, aes(x = Date, y = Rendement)) +
+  geom_line(color = "gray40", alpha = 0.7) +
+  geom_line(aes(y = Fit, color = Regime), size = 1.2) +
+  geom_vline(xintercept = as.numeric(date_covid), linetype = "dashed", color = "black") +
+  annotate("text", x = date_covid, y = max(y, na.rm = TRUE),
+           label = "Rupture COVID", hjust = -0.05, vjust = 1.5, size = 5) +
+  annotate("text", x = min(dates), y = min(y),
+           label = paste0("Test de Chow (rupture) :\n",
+                          "F = ", round(chow_res$F, 3), "\n",
+                          "p = ", round(chow_res$p.value, 5)),
+           hjust = 0, vjust = 0, size = 4.3, color = "black") +
+  scale_color_manual(values = c("Avant COVID" = "#1f77b4", "Après COVID" = "#d62728")) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Stabilité structurelle avant/après COVID (Test de Chow)",
+       x = "", y = "Rendements log")
+
+print(p)
+index_dates <- index(ret2)
+index_dates[bp$breakpoints]
+```
+```{r}
+### ICSSS
+
+install.packages("changepoint")
+library(changepoint)
+ret <- as.numeric(rendements)
+
+icss_res <- cpt.var(ret, method = "BinSeg", penalty = "MBIC")
+
+print(icss_res)
+
+plot(icss_res, main = "Changements de variance détectés")
+
+```
+
