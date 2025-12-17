@@ -1,6 +1,6 @@
 # Codes-pour-memoire
 Ces fichiers contiennent l'ensemble des codes utilisés ainsi que les données au cours de ce mémoire 
-# Modélisation de la volatilité financière par les modèles GARCH GARCH-TVE
+# Modélisation économétrique de la dynamique de la volatilité des rendements boursiers de la BRVM et prevision des evenements extremes
 
 Ce dépôt contient les codes R développés dans le cadre de mon mémoire de Master,
 consacré à la modélisation de la volatilité des rendements financiers à l’aide
